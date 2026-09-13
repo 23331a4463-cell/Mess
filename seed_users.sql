@@ -1,6 +1,6 @@
 -- ==============================================================================
--- Mini MES - Clean & Seed Demo Users in Supabase Auth (UUID Cast Fixed)
--- Run this in Supabase SQL Editor to provision all 4 pre-confirmed accounts
+-- Mini MES - Clean & Seed Demo Users in Supabase Auth (Clean Alphanumeric Passwords)
+-- Passwords have NO special characters: Admin123, Supervisor123, Operator123, Quality123
 -- ==============================================================================
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -21,7 +21,7 @@ DELETE FROM auth.users WHERE email IN (
     'admin@factory.com', 'supervisor@factory.com', 'operator@factory.com', 'quality@factory.com'
 );
 
--- 2. Create users and linked identities
+-- 2. Create users and linked identities with clean alphanumeric passwords
 DO $$
 DECLARE
     v_admin_id UUID := 'a1111111-1111-1111-1111-111111111111';
@@ -29,7 +29,7 @@ DECLARE
     v_oper_id  UUID := 'c3333333-3333-3333-3333-333333333333';
     v_qual_id  UUID := 'd4444444-4444-4444-4444-444444444444';
 BEGIN
-    -- Admin (admin@factory.com / Admin#123!)
+    -- Admin (admin@factory.com / Admin123)
     INSERT INTO auth.users (
         instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
         last_sign_in_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
@@ -40,7 +40,7 @@ BEGIN
         'authenticated',
         'authenticated',
         'admin@factory.com',
-        crypt('Admin#123!', gen_salt('bf')),
+        crypt('Admin123', gen_salt('bf')),
         now(),
         now(),
         '{"provider":"email","providers":["email"]}'::jsonb,
@@ -53,7 +53,7 @@ BEGIN
         ''
     );
 
-    -- Supervisor (supervisor@factory.com / Super#123!)
+    -- Supervisor (supervisor@factory.com / Supervisor123)
     INSERT INTO auth.users (
         instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
         last_sign_in_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
@@ -64,7 +64,7 @@ BEGIN
         'authenticated',
         'authenticated',
         'supervisor@factory.com',
-        crypt('Super#123!', gen_salt('bf')),
+        crypt('Supervisor123', gen_salt('bf')),
         now(),
         now(),
         '{"provider":"email","providers":["email"]}'::jsonb,
@@ -77,7 +77,7 @@ BEGIN
         ''
     );
 
-    -- Operator (operator@factory.com / Oper#123!)
+    -- Operator (operator@factory.com / Operator123)
     INSERT INTO auth.users (
         instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
         last_sign_in_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
@@ -88,7 +88,7 @@ BEGIN
         'authenticated',
         'authenticated',
         'operator@factory.com',
-        crypt('Oper#123!', gen_salt('bf')),
+        crypt('Operator123', gen_salt('bf')),
         now(),
         now(),
         '{"provider":"email","providers":["email"]}'::jsonb,
@@ -101,7 +101,7 @@ BEGIN
         ''
     );
 
-    -- Quality Inspector (quality@factory.com / Quality#123!)
+    -- Quality Inspector (quality@factory.com / Quality123)
     INSERT INTO auth.users (
         instance_id, id, aud, role, email, encrypted_password, email_confirmed_at,
         last_sign_in_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at,
@@ -112,7 +112,7 @@ BEGIN
         'authenticated',
         'authenticated',
         'quality@factory.com',
-        crypt('Quality#123!', gen_salt('bf')),
+        crypt('Quality123', gen_salt('bf')),
         now(),
         now(),
         '{"provider":"email","providers":["email"]}'::jsonb,
@@ -126,7 +126,6 @@ BEGIN
     );
 
     -- Insert corresponding rows in auth.identities
-    -- In your Supabase database, auth.identities.id is type UUID
     INSERT INTO auth.identities (
         id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at
     ) VALUES 

@@ -13,6 +13,7 @@ import { QualityInspectionList } from './components/quality/QualityInspectionLis
 import { QualityInspectionModal } from './components/quality/QualityInspectionModal';
 import { MachineList } from './components/machines/MachineList';
 import { MachineModal } from './components/machines/MachineModal';
+import { ScheduleView } from './components/schedule/ScheduleView';
 import { ConnectionModal } from './components/common/ConnectionModal';
 import { ToastContainer, ToastMessage } from './components/common/Toast';
 import { ConfirmModal } from './components/common/ConfirmModal';
@@ -235,6 +236,23 @@ const MesAppContent: React.FC = () => {
     });
   };
 
+  const handleRescheduleWorkOrder = async (woId: string, newStartDate: string, newDueDate: string) => {
+    try {
+      // Optimistically update local state
+      setWorkOrders(prev => prev.map(w => w.id === woId ? { ...w, start_date: newStartDate, due_date: newDueDate } : w));
+      
+      await mesApi.updateWorkOrder(woId, {
+        start_date: newStartDate,
+        due_date: newDueDate
+      });
+      addToast('success', 'Work Order Rescheduled', `Updated timeline span to ${newStartDate} – ${newDueDate}`);
+      loadData();
+    } catch (err: any) {
+      addToast('error', 'Rescheduling Failed', err.message || 'Unable to update work order schedule.');
+      loadData(); // revert
+    }
+  };
+
   // Auth Loading Screen
   if (authLoading) {
     return (
@@ -324,6 +342,16 @@ const MesAppContent: React.FC = () => {
                   }}
                   onOpenDetailModal={(woId) => setDetailWorkOrderId(woId)}
                   onDeleteWorkOrder={handleDeleteWorkOrder}
+                />
+              )}
+
+              {activeTab === 'schedule' && (
+                <ScheduleView
+                  workOrders={workOrders}
+                  machines={machines}
+                  onOpenDetailModal={(woId) => setDetailWorkOrderId(woId)}
+                  onRescheduleWorkOrder={handleRescheduleWorkOrder}
+                  onRefresh={() => loadData(true)}
                 />
               )}
 

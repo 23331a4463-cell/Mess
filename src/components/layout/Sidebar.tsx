@@ -2,6 +2,7 @@ import React from 'react';
 import { 
   LayoutDashboard, 
   ClipboardList, 
+  CalendarRange,
   Hammer, 
   CheckCircle, 
   Cpu, 
@@ -11,7 +12,7 @@ import {
 import { UserRole } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
 
-export type TabType = 'dashboard' | 'work-orders' | 'production' | 'quality' | 'machines';
+export type TabType = 'dashboard' | 'work-orders' | 'schedule' | 'production' | 'quality' | 'machines';
 
 interface SidebarProps {
   activeTab: TabType;
@@ -49,6 +50,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
       icon: ClipboardList,
       roles: ['Admin', 'Supervisor', 'Operator', 'Quality Inspector'],
       badge: counts?.inProgressOrders ? `${counts.inProgressOrders} active` : undefined,
+    },
+    {
+      id: 'schedule',
+      label: 'Gantt Schedule',
+      icon: CalendarRange,
+      roles: ['Admin', 'Supervisor'],
     },
     {
       id: 'production',

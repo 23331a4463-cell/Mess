@@ -158,6 +158,15 @@ The application will be running at `http://localhost:5173`.
   - **Floor Scrap**: Defective parts rejected during shift production.
   - **QC Defects**: Defective parts discovered during quality inspection audits.
 
+### 4. Machine Scheduling & Gantt Timeline View
+- **Gantt Matrix**: Plots active work orders as horizontal span bars across factory machines and calendar dates, visible to **Admin** and **Supervisor** roles.
+- **Week & Month Views**: Seamless date navigation with a highlighted "Today" column and day-by-day scheduling.
+- **Inline Progress Fills**: In Progress bars display a darker shaded portion proportional to `produced_quantity / planned_quantity`.
+- **Overdue Risk Flags**: Highlights at-risk orders (`due_date < today AND status != 'Completed'`) with a pulsing red warning dot.
+- **Machine Overload & Conflict Detection**: Identifies double-booked workstations with 2+ overlapping orders, displaying an amber conflict badge and allocating separate vertical lanes so both bars remain legible.
+- **Drag-to-Reschedule & Edge Resizing**: Drag bars horizontally or use edge handles to update start/due dates with real-time optimistic UI updates and database persistence.
+- **One-Click Inspection**: Clicking any bar opens the comprehensive Work Order detail modal.
+
 ---
 
 ## Verification & Test Checklist
@@ -165,9 +174,9 @@ The application will be running at `http://localhost:5173`.
 | # | Test Scenario | Steps | Expected Outcome |
 |---|---|---|---|
 | **0** | **Authentication Gate** | Open application without active session | Redirects to industrial login screen; dashboard and sidebar are inaccessible until login. |
-| **1** | **Role Login (Operator)** | Log in as `operator@factory.com` | Navbar displays Operator badge; "Create Work Order" and "Add Machine" buttons are hidden; Settings displays read-only RBAC matrix. |
-| **2** | **Role Login (Supervisor)** | Log in as `supervisor@factory.com` | Work order creation/editing enabled; machine management restricted to view-only. |
-| **3** | **Role Login (Admin)** | Log in as `admin@factory.com` | Full administrative control enabled (work orders, shift logs, machines, deletions). |
+| **1** | **Role Login (Operator)** | Log in as `operator@factory.com` | Navbar displays Operator badge; "Create Work Order" and "Add Machine" buttons are hidden; Settings displays read-only RBAC matrix; Schedule tab is hidden. |
+| **2** | **Role Login (Supervisor)** | Log in as `supervisor@factory.com` | Work order creation/editing and Gantt Schedule view enabled; machine management restricted to view-only. |
+| **3** | **Role Login (Admin)** | Log in as `admin@factory.com` | Full administrative control enabled (work orders, schedule timeline, shift logs, machines, deletions). |
 | **4** | **Create Work Order** | Log in as Supervisor, create WO with Target = 100 | Order appears with 0% progress and `Pending` status. |
 | **5** | **Shift Production & Cap Validation** | Log in as Operator, enter +50 Produced, +5 Rejected | Status advances to `In Progress`; completion is 50%; remaining is 50. |
 | **6** | **Exceed Planned Quantity** | Attempt to log +50 Produced + 10 Rejected on above order | Blocked with message: *"This entry would exceed the planned quantity of 100 by 15 units."* |
@@ -175,3 +184,6 @@ The application will be running at `http://localhost:5173`.
 | **8** | **Work Order Completion** | Log remaining 50 good units | Status automatically advances to `Completed`; Completion is 100%. |
 | **9** | **RLS Direct API Defense** | Attempt direct Supabase API delete from Operator session | Database returns PostgreSQL RLS policy violation (`42501 permission denied`). |
 | **10** | **Sign Out** | Click Sign Out in Navbar or Settings | Session destroyed, returns cleanly to the login screen. |
+| **11** | **Machine Overload / Conflict Detection** | Create two work orders on the same machine with overlapping dates | Schedule / Gantt view displays an amber conflict badge (`Conflict (2)`) on the machine row with collision details; bars are allocated readable vertical lanes. |
+| **12** | **Gantt Drag Rescheduling** | Drag a work order bar horizontally on the schedule timeline | Work order start and due dates update optimistically and persist to database via `updateWorkOrder`; toast confirmation is displayed. |
+
