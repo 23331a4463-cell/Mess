@@ -44,6 +44,8 @@ export interface WorkOrder {
   created_by?: string | null;
   created_at?: string;
   updated_at?: string;
+  floor_rejected_quantity?: number;
+  qc_rejected_quantity?: number;
   // Joined relation fields
   machine?: Machine | null;
   operator?: Profile | null;
@@ -103,6 +105,8 @@ export interface DashboardMetrics {
   totalPlannedQuantity: number;
   totalProducedQuantity: number;
   totalRejectedQuantity: number;
+  totalFloorRejectedQuantity?: number;
+  totalQcRejectedQuantity?: number;
   totalRemainingQuantity: number;
   completionPercentage: number;
   overallRejectionRate: number;

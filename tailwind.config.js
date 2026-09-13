@@ -7,6 +7,11 @@ export default {
   darkMode: 'class',
   theme: {
     extend: {
+      fontFamily: {
+        sans: ['Inter', 'system-ui', 'sans-serif'],
+        mono: ['JetBrains Mono', 'monospace'],
+        display: ['Space Grotesk', 'sans-serif'],
+      },
       colors: {
         industrial: {
           50: '#f8fafc',
@@ -24,9 +29,11 @@ export default {
         brand: {
           50: '#eff6ff',
           100: '#dbeafe',
-          500: '#0284c7',
-          600: '#0369a1',
-          700: '#075985',
+          200: '#bfdbfe',
+          500: '#3b82f6',
+          600: '#2563eb',
+          700: '#1d4ed8',
+          800: '#1e40af',
         }
       }
     },

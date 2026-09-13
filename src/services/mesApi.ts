@@ -157,8 +157,15 @@ export const mesApi = {
         .order('created_at', { ascending: false })
     ]);
 
+    const floorRejects = (prodRes.data || []).reduce((acc, curr) => acc + (curr.rejected_quantity || 0), 0);
+    const qcRejects = (qcRes.data || []).reduce((acc, curr) => acc + (curr.rejected_quantity || 0), 0);
+
     return {
-      workOrder: woData,
+      workOrder: {
+        ...woData,
+        floor_rejected_quantity: floorRejects,
+        qc_rejected_quantity: qcRejects
+      },
       productionEntries: prodRes.data || [],
       inspections: qcRes.data || []
     };
@@ -219,6 +226,8 @@ export const mesApi = {
     delete cleanUpdates.machine;
     delete cleanUpdates.operator;
     delete cleanUpdates.creator;
+    delete cleanUpdates.floor_rejected_quantity;
+    delete cleanUpdates.qc_rejected_quantity;
 
     const { data, error } = await supabase
       .from('work_orders')
@@ -300,7 +309,17 @@ export const mesApi = {
       throw new Error('At least produced quantity or rejected quantity must be greater than zero.');
     }
 
-    // 4. Insert entry
+    // 4. Cap production entries at planned quantity:
+    // Before inserting, sum the work order's existing produced+rejected quantities and reject
+    // the new entry with a clear error if it would push the total past planned_quantity.
+    const currentTotal = (wo.produced_quantity || 0) + (wo.rejected_quantity || 0);
+    const newTotal = currentTotal + entry.produced_quantity + entry.rejected_quantity;
+    if (newTotal > wo.planned_quantity) {
+      const excess = newTotal - wo.planned_quantity;
+      throw new Error(`This entry would exceed the planned quantity of ${wo.planned_quantity} by ${excess} units.`);
+    }
+
+    // 5. Insert entry
     const { data: newEntry, error: insertError } = await supabase
       .from('production_entries')
       .insert([entry])
@@ -313,7 +332,7 @@ export const mesApi = {
 
     if (insertError) throw new Error(insertError.message);
 
-    // 5. Update work order totals (guarantees consistency if triggers are not active)
+    // 6. Update work order totals (guarantees consistency if triggers are not active)
     await this.syncWorkOrderQuantities(entry.work_order_id);
 
     return newEntry;
@@ -330,16 +349,27 @@ export const mesApi = {
   },
 
   // Recalculate and synchronize work order produced & rejected quantities
+  // SINGLE SOURCE OF TRUTH: Work order status transition to 'Completed' is strictly based on
+  // produced_quantity >= planned_quantity (conforming good units only).
+  // Total rejected quantity combines both shop-floor scrap (from production_entries) and QC defects (from quality_inspections).
   async syncWorkOrderQuantities(workOrderId: string): Promise<void> {
-    const { data: entries, error: entriesError } = await supabase
-      .from('production_entries')
-      .select('produced_quantity, rejected_quantity')
-      .eq('work_order_id', workOrderId);
+    const [entriesRes, qcRes] = await Promise.all([
+      supabase
+        .from('production_entries')
+        .select('produced_quantity, rejected_quantity')
+        .eq('work_order_id', workOrderId),
+      supabase
+        .from('quality_inspections')
+        .select('rejected_quantity')
+        .eq('work_order_id', workOrderId)
+    ]);
 
-    if (entriesError) return;
+    if (entriesRes.error) return;
 
-    const totalProduced = (entries || []).reduce((acc, curr) => acc + (curr.produced_quantity || 0), 0);
-    const totalRejected = (entries || []).reduce((acc, curr) => acc + (curr.rejected_quantity || 0), 0);
+    const totalProduced = (entriesRes.data || []).reduce((acc, curr) => acc + (curr.produced_quantity || 0), 0);
+    const floorRejected = (entriesRes.data || []).reduce((acc, curr) => acc + (curr.rejected_quantity || 0), 0);
+    const qcRejected = (qcRes.data || []).reduce((acc, curr) => acc + (curr.rejected_quantity || 0), 0);
+    const totalRejected = floorRejected + qcRejected;
 
     const { data: wo } = await supabase
       .from('work_orders')
@@ -351,6 +381,7 @@ export const mesApi = {
 
     let newStatus = wo.status;
     if (wo.status !== 'Cancelled') {
+      // SINGLE SOURCE OF TRUTH: only good produced units count toward target completion
       if (totalProduced >= wo.planned_quantity) {
         newStatus = 'Completed';
       } else if (totalProduced > 0) {
@@ -425,6 +456,10 @@ export const mesApi = {
       .single();
 
     if (error) throw new Error(error.message);
+
+    // Synchronize QC rejects with the work order pipeline
+    await this.syncWorkOrderQuantities(inspection.work_order_id);
+
     return data;
   },
 
@@ -455,16 +490,33 @@ export const mesApi = {
       .single();
 
     if (error) throw new Error(error.message);
+
+    // Synchronize QC rejects with the work order pipeline
+    if (data.work_order_id) {
+      await this.syncWorkOrderQuantities(data.work_order_id);
+    }
+
     return data;
   },
 
   async deleteQualityInspection(id: string): Promise<void> {
+    // Fetch work_order_id before deletion to synchronize
+    const { data: qc } = await supabase
+      .from('quality_inspections')
+      .select('work_order_id')
+      .eq('id', id)
+      .single();
+
     const { error } = await supabase
       .from('quality_inspections')
       .delete()
       .eq('id', id);
 
     if (error) throw new Error(error.message);
+
+    if (qc?.work_order_id) {
+      await this.syncWorkOrderQuantities(qc.work_order_id);
+    }
   },
 
   // ==========================================
@@ -488,6 +540,8 @@ export const mesApi = {
           totalPlannedQuantity: 0,
           totalProducedQuantity: 0,
           totalRejectedQuantity: 0,
+          totalFloorRejectedQuantity: 0,
+          totalQcRejectedQuantity: 0,
           totalRemainingQuantity: 0,
           completionPercentage: 0,
           overallRejectionRate: 0
@@ -499,10 +553,11 @@ export const mesApi = {
       };
     }
 
-    const [woRes, entriesRes, qcRes] = await Promise.all([
+    const [woRes, entriesRes, qcRes, allEntriesRes] = await Promise.all([
       supabase.from('work_orders').select('*, machine:machines(*)').order('created_at', { ascending: false }),
       supabase.from('production_entries').select('*, work_order:work_orders(work_order_number, product_name), machine:machines(machine_code)').order('created_at', { ascending: false }).limit(6),
-      supabase.from('quality_inspections').select('*')
+      supabase.from('quality_inspections').select('*'),
+      supabase.from('production_entries').select('rejected_quantity')
     ]);
 
     const workOrders: WorkOrder[] = woRes.data || [];
@@ -518,14 +573,17 @@ export const mesApi = {
     const totalPlannedQuantity = workOrders.reduce((sum, w) => sum + (w.planned_quantity || 0), 0);
     const totalProducedQuantity = workOrders.reduce((sum, w) => sum + (w.produced_quantity || 0), 0);
     const totalRejectedQuantity = workOrders.reduce((sum, w) => sum + (w.rejected_quantity || 0), 0);
+    const totalFloorRejectedQuantity = (allEntriesRes.data || []).reduce((sum, e) => sum + (e.rejected_quantity || 0), 0);
+    const totalQcRejectedQuantity = inspections.reduce((sum, q) => sum + (q.rejected_quantity || 0), 0);
     const totalRemainingQuantity = Math.max(0, totalPlannedQuantity - totalProducedQuantity - totalRejectedQuantity);
 
+    // SINGLE SOURCE OF TRUTH: Completion % is strictly produced_quantity / planned_quantity (good units only).
     const completionPercentage = totalPlannedQuantity > 0
-      ? Math.min(100, Math.round(((totalProducedQuantity + totalRejectedQuantity) / totalPlannedQuantity) * 100))
+      ? Math.min(100, Math.round((totalProducedQuantity / totalPlannedQuantity) * 100))
       : 0;
 
     const totalInspected = inspections.reduce((sum, q) => sum + (q.inspected_quantity || 0), 0);
-    const totalQcRejected = inspections.reduce((sum, q) => sum + (q.rejected_quantity || 0), 0);
+    const totalQcRejected = totalQcRejectedQuantity;
     const overallRejectionRate = totalInspected > 0
       ? Math.round((totalQcRejected / totalInspected) * 1000) / 10
       : 0;
@@ -561,6 +619,8 @@ export const mesApi = {
         totalPlannedQuantity,
         totalProducedQuantity,
         totalRejectedQuantity,
+        totalFloorRejectedQuantity,
+        totalQcRejectedQuantity,
         totalRemainingQuantity,
         completionPercentage,
         overallRejectionRate
@@ -572,3 +632,4 @@ export const mesApi = {
     };
   }
 };
+

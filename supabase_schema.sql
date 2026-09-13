@@ -1,23 +1,32 @@
 -- ==============================================================================
 -- Mini MES (Manufacturing Execution System) - Supabase PostgreSQL Database Schema
+-- With Role-Based Access Control (RBAC), Triggers & Strict Security
 -- ==============================================================================
 
 -- 1. EXTENSIONS
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 
--- 2. ENUM OR DOMAIN CONSTRAINTS (Handled via table CHECK constraints for flexibility)
+-- 2. CLEAN RESET (Drops legacy tables & triggers to guarantee clean schema & avoid deadlocks)
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+DROP TRIGGER IF EXISTS trg_production_entries_sync ON public.production_entries;
+DROP TRIGGER IF EXISTS trg_quality_inspections_sync ON public.quality_inspections;
+DROP TABLE IF EXISTS public.quality_inspections CASCADE;
+DROP TABLE IF EXISTS public.production_entries CASCADE;
+DROP TABLE IF EXISTS public.work_orders CASCADE;
+DROP TABLE IF EXISTS public.machines CASCADE;
+DROP TABLE IF EXISTS public.profiles CASCADE;
 
 -- 3. PROFILES TABLE
--- Stores operators, supervisors, inspectors, and admins
-CREATE TABLE IF NOT EXISTS public.profiles (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+-- Linked directly to Supabase Auth users (auth.users)
+CREATE TABLE public.profiles (
+    id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
     full_name TEXT NOT NULL,
     email TEXT UNIQUE NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('Admin', 'Supervisor', 'Operator', 'Quality Inspector')),
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 4. MACHINES TABLE
+-- 3. MACHINES TABLE
 -- Tracks factory equipment and operating statuses
 CREATE TABLE IF NOT EXISTS public.machines (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -32,7 +41,7 @@ CREATE TABLE IF NOT EXISTS public.machines (
     updated_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 5. WORK ORDERS TABLE
+-- 4. WORK ORDERS TABLE
 -- Central manufacturing orders tracking target vs actuals
 CREATE TABLE IF NOT EXISTS public.work_orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -55,8 +64,8 @@ CREATE TABLE IF NOT EXISTS public.work_orders (
     CONSTRAINT chk_due_date_after_start CHECK (due_date >= start_date)
 );
 
--- 6. PRODUCTION ENTRIES TABLE
--- Logs shift production and rejected counts per work order
+-- 5. PRODUCTION ENTRIES TABLE
+-- Logs shift production and floor scrap counts per work order
 CREATE TABLE IF NOT EXISTS public.production_entries (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     work_order_id UUID NOT NULL REFERENCES public.work_orders(id) ON DELETE CASCADE,
@@ -70,7 +79,7 @@ CREATE TABLE IF NOT EXISTS public.production_entries (
     created_at TIMESTAMPTZ DEFAULT timezone('utc'::text, now()) NOT NULL
 );
 
--- 7. QUALITY INSPECTIONS TABLE
+-- 6. QUALITY INSPECTIONS TABLE
 -- Verification and defect tracking by QC inspectors
 CREATE TABLE IF NOT EXISTS public.quality_inspections (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -88,7 +97,7 @@ CREATE TABLE IF NOT EXISTS public.quality_inspections (
     CONSTRAINT chk_rejected_not_exceed CHECK (rejected_quantity <= inspected_quantity)
 );
 
--- 8. INDEXES FOR PERFORMANCE
+-- 7. INDEXES
 CREATE INDEX IF NOT EXISTS idx_wo_status ON public.work_orders(status);
 CREATE INDEX IF NOT EXISTS idx_wo_machine ON public.work_orders(machine_id);
 CREATE INDEX IF NOT EXISTS idx_wo_operator ON public.work_orders(operator_id);
@@ -96,15 +105,58 @@ CREATE INDEX IF NOT EXISTS idx_pe_work_order ON public.production_entries(work_o
 CREATE INDEX IF NOT EXISTS idx_pe_date ON public.production_entries(production_date);
 CREATE INDEX IF NOT EXISTS idx_qi_work_order ON public.quality_inspections(work_order_id);
 
--- 9. TRIGGERS & AUTOMATED QUANTITY RECALCULATION
--- Recalculate work order produced & rejected quantities whenever production entries change
+-- 8. AUTH TRIGGER: AUTO-CREATE PROFILE ON AUTH.USERS INSERT
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+    INSERT INTO public.profiles (id, full_name, email, role)
+    VALUES (
+        NEW.id,
+        COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
+        NEW.email,
+        COALESCE(NEW.raw_user_meta_data->>'role', 'Operator')
+    )
+    ON CONFLICT (id) DO UPDATE
+    SET 
+        full_name = EXCLUDED.full_name,
+        email = EXCLUDED.email,
+        role = EXCLUDED.role;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+    AFTER INSERT ON auth.users
+    FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- 9. SECURITY DEFINER HELPER: GET CURRENT USER ROLE
+-- Avoids recursive RLS evaluation when checking user permissions
+CREATE OR REPLACE FUNCTION public.get_my_role()
+RETURNS TEXT AS $$
+DECLARE
+    user_role TEXT;
+BEGIN
+    SELECT role INTO user_role
+    FROM public.profiles
+    WHERE id = auth.uid();
+    RETURN user_role;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER STABLE;
+
+-- 10. WORKFLOW TRIGGERS & RECALCULATION
+-- SINGLE SOURCE OF TRUTH: Work order status transition to 'Completed' is strictly based on
+-- produced_quantity >= planned_quantity (conforming good units only).
+-- Total rejected quantity combines both floor scrap (production_entries) and QC defects (quality_inspections).
 CREATE OR REPLACE FUNCTION public.recalculate_work_order_totals()
 RETURNS TRIGGER AS $$
 DECLARE
     target_wo_id UUID;
-    total_produced INTEGER;
-    total_rejected INTEGER;
-    current_planned INTEGER;
+    total_produced INTEGER := 0;
+    floor_rejected INTEGER := 0;
+    qc_rejected INTEGER := 0;
+    total_rejected INTEGER := 0;
+    current_planned INTEGER := 0;
     current_status TEXT;
 BEGIN
     IF (TG_OP = 'DELETE') THEN
@@ -113,23 +165,43 @@ BEGIN
         target_wo_id := NEW.work_order_id;
     END IF;
 
-    -- Calculate aggregates from all production entries for this work order
-    SELECT 
-        COALESCE(SUM(produced_quantity), 0),
-        COALESCE(SUM(rejected_quantity), 0)
-    INTO 
-        total_produced,
-        total_rejected
-    FROM public.production_entries
-    WHERE work_order_id = target_wo_id;
-
-    -- Fetch current planned quantity and current status
+    -- Fetch planned target and current status
     SELECT planned_quantity, status 
     INTO current_planned, current_status
     FROM public.work_orders
     WHERE id = target_wo_id;
 
+    IF NOT FOUND THEN
+        RETURN NULL;
+    END IF;
+
+    -- Aggregate production output and floor rejects
+    SELECT 
+        COALESCE(SUM(produced_quantity), 0),
+        COALESCE(SUM(rejected_quantity), 0)
+    INTO 
+        total_produced,
+        floor_rejected
+    FROM public.production_entries
+    WHERE work_order_id = target_wo_id;
+
+    -- Aggregate QC rejected defect units
+    SELECT 
+        COALESCE(SUM(rejected_quantity), 0)
+    INTO 
+        qc_rejected
+    FROM public.quality_inspections
+    WHERE work_order_id = target_wo_id;
+
+    total_rejected := floor_rejected + qc_rejected;
+
+    -- Defense-in-depth: ensure production entries do not exceed planned targets
+    IF (total_produced + total_rejected) > current_planned THEN
+        RAISE EXCEPTION 'Total output (% units) would exceed planned quantity (% units)', (total_produced + total_rejected), current_planned;
+    END IF;
+
     -- Determine new status if not manually cancelled
+    -- SINGLE SOURCE OF TRUTH: only good produced units count toward target completion
     IF current_status != 'Cancelled' THEN
         IF total_produced >= current_planned THEN
             current_status := 'Completed';
@@ -151,15 +223,23 @@ BEGIN
 
     RETURN NULL;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp;
 
+-- Trigger on production_entries
 DROP TRIGGER IF EXISTS trg_recalculate_work_order ON public.production_entries;
 CREATE TRIGGER trg_recalculate_work_order
 AFTER INSERT OR UPDATE OR DELETE ON public.production_entries
 FOR EACH ROW
 EXECUTE FUNCTION public.recalculate_work_order_totals();
 
--- Automated timestamp updater for updated_at columns
+-- Trigger on quality_inspections (so QC defects immediately update work order)
+DROP TRIGGER IF EXISTS trg_recalculate_work_order_qc ON public.quality_inspections;
+CREATE TRIGGER trg_recalculate_work_order_qc
+AFTER INSERT OR UPDATE OR DELETE ON public.quality_inspections
+FOR EACH ROW
+EXECUTE FUNCTION public.recalculate_work_order_totals();
+
+-- Automated timestamp updater
 CREATE OR REPLACE FUNCTION public.set_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -183,72 +263,89 @@ CREATE TRIGGER trg_quality_inspections_updated_at
 BEFORE UPDATE ON public.quality_inspections
 FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
--- 10. ROW LEVEL SECURITY (RLS)
+-- 11. ROW LEVEL SECURITY (RLS) - ROLE-AWARE POLICIES
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.machines ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.work_orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.production_entries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.quality_inspections ENABLE ROW LEVEL SECURITY;
 
--- Clean existing policies if re-running
-DROP POLICY IF EXISTS "Allow select for all" ON public.profiles;
-DROP POLICY IF EXISTS "Allow insert for all" ON public.profiles;
-DROP POLICY IF EXISTS "Allow update for all" ON public.profiles;
+-- 11. ROW LEVEL SECURITY (RLS) POLICIES
+-- PROFILES POLICIES
+-- All authenticated users can read profiles; users can only update their own profile
+CREATE POLICY "profiles_select_auth" ON public.profiles
+    FOR SELECT TO authenticated
+    USING (true);
 
-DROP POLICY IF EXISTS "Allow select for all" ON public.machines;
-DROP POLICY IF EXISTS "Allow insert for all" ON public.machines;
-DROP POLICY IF EXISTS "Allow update for all" ON public.machines;
-DROP POLICY IF EXISTS "Allow delete for all" ON public.machines;
+CREATE POLICY "profiles_update_own" ON public.profiles
+    FOR UPDATE TO authenticated
+    USING (auth.uid() = id)
+    WITH CHECK (auth.uid() = id);
 
-DROP POLICY IF EXISTS "Allow select for all" ON public.work_orders;
-DROP POLICY IF EXISTS "Allow insert for all" ON public.work_orders;
-DROP POLICY IF EXISTS "Allow update for all" ON public.work_orders;
-DROP POLICY IF EXISTS "Allow delete for all" ON public.work_orders;
+-- MACHINES POLICIES
+-- All authenticated users can view machines; Admins & Supervisors can manage
+CREATE POLICY "machines_select_auth" ON public.machines
+    FOR SELECT TO authenticated
+    USING (true);
 
-DROP POLICY IF EXISTS "Allow select for all" ON public.production_entries;
-DROP POLICY IF EXISTS "Allow insert for all" ON public.production_entries;
-DROP POLICY IF EXISTS "Allow update for all" ON public.production_entries;
-DROP POLICY IF EXISTS "Allow delete for all" ON public.production_entries;
+CREATE POLICY "machines_manage_admin_supervisor" ON public.machines
+    FOR ALL TO authenticated
+    USING (public.get_my_role() IN ('Admin', 'Supervisor'))
+    WITH CHECK (public.get_my_role() IN ('Admin', 'Supervisor'));
 
-DROP POLICY IF EXISTS "Allow select for all" ON public.quality_inspections;
-DROP POLICY IF EXISTS "Allow insert for all" ON public.quality_inspections;
-DROP POLICY IF EXISTS "Allow update for all" ON public.quality_inspections;
-DROP POLICY IF EXISTS "Allow delete for all" ON public.quality_inspections;
+-- WORK ORDERS POLICIES
+-- All authenticated users can view; Admins & Supervisors can insert/update; only Admin can delete
+CREATE POLICY "work_orders_select_auth" ON public.work_orders
+    FOR SELECT TO authenticated
+    USING (true);
 
--- Permissive policies allowing authenticated and anon application users full operational access
-CREATE POLICY "Allow select for all" ON public.profiles FOR SELECT USING (true);
-CREATE POLICY "Allow insert for all" ON public.profiles FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow update for all" ON public.profiles FOR UPDATE USING (true);
+CREATE POLICY "work_orders_insert_update" ON public.work_orders
+    FOR INSERT TO authenticated
+    WITH CHECK (public.get_my_role() IN ('Admin', 'Supervisor'));
 
-CREATE POLICY "Allow select for all" ON public.machines FOR SELECT USING (true);
-CREATE POLICY "Allow insert for all" ON public.machines FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow update for all" ON public.machines FOR UPDATE USING (true);
-CREATE POLICY "Allow delete for all" ON public.machines FOR DELETE USING (true);
+CREATE POLICY "work_orders_update" ON public.work_orders
+    FOR UPDATE TO authenticated
+    USING (public.get_my_role() IN ('Admin', 'Supervisor'))
+    WITH CHECK (public.get_my_role() IN ('Admin', 'Supervisor'));
 
-CREATE POLICY "Allow select for all" ON public.work_orders FOR SELECT USING (true);
-CREATE POLICY "Allow insert for all" ON public.work_orders FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow update for all" ON public.work_orders FOR UPDATE USING (true);
-CREATE POLICY "Allow delete for all" ON public.work_orders FOR DELETE USING (true);
+CREATE POLICY "work_orders_delete_admin" ON public.work_orders
+    FOR DELETE TO authenticated
+    USING (public.get_my_role() = 'Admin');
 
-CREATE POLICY "Allow select for all" ON public.production_entries FOR SELECT USING (true);
-CREATE POLICY "Allow insert for all" ON public.production_entries FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow update for all" ON public.production_entries FOR UPDATE USING (true);
-CREATE POLICY "Allow delete for all" ON public.production_entries FOR DELETE USING (true);
+-- PRODUCTION ENTRIES POLICIES
+-- All authenticated users can view; Operators, Supervisors & Admins can insert; Admin & Supervisor can delete
+CREATE POLICY "production_entries_select_auth" ON public.production_entries
+    FOR SELECT TO authenticated
+    USING (true);
 
-CREATE POLICY "Allow select for all" ON public.quality_inspections FOR SELECT USING (true);
-CREATE POLICY "Allow insert for all" ON public.quality_inspections FOR INSERT WITH CHECK (true);
-CREATE POLICY "Allow update for all" ON public.quality_inspections FOR UPDATE USING (true);
-CREATE POLICY "Allow delete for all" ON public.quality_inspections FOR DELETE USING (true);
+CREATE POLICY "production_entries_insert_operator" ON public.production_entries
+    FOR INSERT TO authenticated
+    WITH CHECK (public.get_my_role() IN ('Admin', 'Supervisor', 'Operator'));
 
--- 11. SAMPLE SEED DATA (For initial startup)
-INSERT INTO public.profiles (id, full_name, email, role)
-VALUES 
-    ('11111111-1111-1111-1111-111111111111', 'Alex Mercer (Supervisor)', 'alex.mercer@factory.internal', 'Supervisor'),
-    ('22222222-2222-2222-2222-222222222222', 'David Chen (Lead Operator)', 'david.chen@factory.internal', 'Operator'),
-    ('33333333-3333-3333-3333-333333333333', 'Elena Rodriguez (Quality Inspector)', 'elena.rodriguez@factory.internal', 'Quality Inspector'),
-    ('44444444-4444-4444-4444-444444444444', 'Marcus Vance (Plant Admin)', 'marcus.vance@factory.internal', 'Admin')
-ON CONFLICT (email) DO NOTHING;
+CREATE POLICY "production_entries_delete_supervisor_admin" ON public.production_entries
+    FOR DELETE TO authenticated
+    USING (public.get_my_role() IN ('Admin', 'Supervisor'));
 
+-- QUALITY INSPECTIONS POLICIES
+-- All authenticated users can view; Inspectors, Supervisors & Admins can insert/update; only Admin can delete
+CREATE POLICY "quality_inspections_select_auth" ON public.quality_inspections
+    FOR SELECT TO authenticated
+    USING (true);
+
+CREATE POLICY "quality_inspections_insert_update" ON public.quality_inspections
+    FOR INSERT TO authenticated
+    WITH CHECK (public.get_my_role() IN ('Admin', 'Supervisor', 'Quality Inspector'));
+
+CREATE POLICY "quality_inspections_update" ON public.quality_inspections
+    FOR UPDATE TO authenticated
+    USING (public.get_my_role() IN ('Admin', 'Supervisor', 'Quality Inspector'))
+    WITH CHECK (public.get_my_role() IN ('Admin', 'Supervisor', 'Quality Inspector'));
+
+CREATE POLICY "quality_inspections_delete_admin" ON public.quality_inspections
+    FOR DELETE TO authenticated
+    USING (public.get_my_role() = 'Admin');
+
+-- 12. SAMPLE SEED MACHINES (Idempotent)
 INSERT INTO public.machines (id, machine_code, machine_name, department, status, location, last_maintenance_date, remarks)
 VALUES
     ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', 'CNC-01', 'HAAS VF-4 CNC Milling', 'Machining', 'Running', 'Bay A - Station 04', CURRENT_DATE - INTERVAL '12 days', 'High-speed spindle serviced'),
@@ -257,5 +354,3 @@ VALUES
     ('dddddddd-dddd-dddd-dddd-dddddddddddd', 'SMT-01', 'Yamaha YSM20R SMT Pick & Place', 'Electronics', 'Running', 'Cleanroom Line 1', CURRENT_DATE - INTERVAL '8 days', 'Feeder calibration passed'),
     ('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', 'ROB-03', 'KUKA KR-16 Robotic Welder', 'Fabrication', 'Maintenance', 'Bay D - Welding Cell', CURRENT_DATE - INTERVAL '1 day', 'Scheduled torch tip replacement')
 ON CONFLICT (machine_code) DO NOTHING;
-
--- End of schema

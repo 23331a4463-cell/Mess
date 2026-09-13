@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { LoginView } from './components/auth/LoginView';
 import { Navbar } from './components/layout/Navbar';
 import { Sidebar, TabType } from './components/layout/Sidebar';
 import { DashboardView } from './components/dashboard/DashboardView';
@@ -11,7 +13,6 @@ import { QualityInspectionList } from './components/quality/QualityInspectionLis
 import { QualityInspectionModal } from './components/quality/QualityInspectionModal';
 import { MachineList } from './components/machines/MachineList';
 import { MachineModal } from './components/machines/MachineModal';
-import { SettingsView } from './components/settings/SettingsView';
 import { ConnectionModal } from './components/common/ConnectionModal';
 import { ToastContainer, ToastMessage } from './components/common/Toast';
 import { ConfirmModal } from './components/common/ConfirmModal';
@@ -22,17 +23,17 @@ import {
   Profile, 
   ProductionEntry, 
   QualityInspection, 
-  DashboardMetrics, 
-  UserRole 
+  DashboardMetrics 
 } from './types';
 import { mesApi } from './services/mesApi';
-import { isSupabaseConfigured, checkSupabaseConnection } from './lib/supabase';
-import { AlertCircle, RefreshCw } from 'lucide-react';
+import { checkSupabaseConnection } from './lib/supabase';
+import { RefreshCw } from 'lucide-react';
 
-export function App() {
-  // Navigation & Role State
+const MesAppContent: React.FC = () => {
+  const { session, loading: authLoading } = useAuth();
+
+  // Navigation State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
-  const [currentRole, setCurrentRole] = useState<UserRole>('Supervisor');
 
   // Supabase Data State
   const [loading, setLoading] = useState(true);
@@ -54,7 +55,9 @@ export function App() {
     totalRejectedQuantity: 0,
     totalRemainingQuantity: 0,
     completionPercentage: 0,
-    overallRejectionRate: 0
+    overallRejectionRate: 0,
+    totalFloorRejectedQuantity: 0,
+    totalQcRejectedQuantity: 0
   });
   const [recentWorkOrders, setRecentWorkOrders] = useState<WorkOrder[]>([]);
   const [recentEntries, setRecentEntries] = useState<ProductionEntry[]>([]);
@@ -128,7 +131,6 @@ export function App() {
       setDefectChart(dashRes.defectSummaryChart);
     } catch (err: any) {
       console.error('Error fetching Supabase MES records:', err);
-      // If error is table missing, open connection modal
       if (err?.message?.includes('relation') || err?.message?.includes('does not exist')) {
         addToast('warning', 'Database Schema Notice', 'PostgreSQL tables not found. Please run the SQL schema.');
       }
@@ -139,15 +141,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    loadData();
-    // Auto-check connection on start
-    checkSupabaseConnection().then(status => {
-      if (!status.connected || !status.tablesFound) {
-        // Open connection modal if not configured
-        setIsConnectionModalOpen(true);
-      }
-    });
-  }, [loadData]);
+    if (session) {
+      loadData();
+      checkSupabaseConnection().then(status => {
+        if (!status.connected || !status.tablesFound) {
+          setIsConnectionModalOpen(true);
+        }
+      });
+    }
+  }, [session, loadData]);
 
   // Handlers for Work Orders
   const handleDeleteWorkOrder = (wo: WorkOrder) => {
@@ -233,17 +235,29 @@ export function App() {
     });
   };
 
+  // Auth Loading Screen
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-3 text-slate-600">
+        <RefreshCw className="w-8 h-8 animate-spin text-blue-600" />
+        <span className="text-sm font-medium">Initializing Industrial MES Session...</span>
+      </div>
+    );
+  }
+
+  // Gated Login View
+  if (!session) {
+    return <LoginView />;
+  }
+
   const runningMachines = machines.filter(m => m.status === 'Running').length;
   const inProgressOrders = workOrders.filter(w => w.status === 'In Progress').length;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
+    <div className="min-h-screen bg-white text-[#1E2939] flex flex-col font-sans">
       
       {/* Top Navbar */}
       <Navbar
-        currentRole={currentRole}
-        onRoleChange={setCurrentRole}
-        onOpenConnectionModal={() => setIsConnectionModalOpen(true)}
         onOpenNewWorkOrder={() => {
           setEditingWorkOrder(null);
           setIsWorkOrderModalOpen(true);
@@ -261,7 +275,6 @@ export function App() {
         <Sidebar
           activeTab={activeTab}
           onSelectTab={setActiveTab}
-          currentRole={currentRole}
           counts={{
             workOrders: workOrders.length,
             runningMachines,
@@ -270,11 +283,11 @@ export function App() {
         />
 
         {/* Dynamic Page Content */}
-        <main className="flex-1 p-4 lg:p-8 overflow-y-auto max-w-7xl mx-auto w-full">
+        <main className="flex-1 p-4 lg:p-8 overflow-y-auto w-full">
           {loading ? (
-            <div className="h-96 flex flex-col items-center justify-center gap-3 text-slate-400">
-              <RefreshCw className="w-8 h-8 animate-spin text-sky-400" />
-              <span className="text-sm font-semibold">Connecting to Supabase PostgreSQL...</span>
+            <div className="h-96 flex flex-col items-center justify-center gap-3 text-slate-600">
+              <RefreshCw className="w-8 h-8 animate-spin text-blue-600" />
+              <span className="text-sm font-medium">Connecting to Supabase PostgreSQL...</span>
             </div>
           ) : (
             <>
@@ -291,7 +304,6 @@ export function App() {
                     setIsWorkOrderModalOpen(true);
                   }}
                   onOpenWorkOrderDetail={(woId) => setDetailWorkOrderId(woId)}
-                  currentRole={currentRole}
                   onRefresh={() => loadData(true)}
                   refreshing={refreshing}
                 />
@@ -302,7 +314,6 @@ export function App() {
                   workOrders={workOrders}
                   machines={machines}
                   profiles={profiles}
-                  currentRole={currentRole}
                   onOpenCreateModal={() => {
                     setEditingWorkOrder(null);
                     setIsWorkOrderModalOpen(true);
@@ -319,7 +330,6 @@ export function App() {
               {activeTab === 'production' && (
                 <ProductionList
                   entries={productionEntries}
-                  currentRole={currentRole}
                   onOpenCreateModal={() => {
                     setPreselectedProductionOrder(null);
                     setIsProductionModalOpen(true);
@@ -332,7 +342,6 @@ export function App() {
                 <QualityInspectionList
                   inspections={inspections}
                   workOrders={workOrders}
-                  currentRole={currentRole}
                   onOpenCreateModal={() => {
                     setEditingInspection(null);
                     setIsQualityModalOpen(true);
@@ -348,7 +357,6 @@ export function App() {
               {activeTab === 'machines' && (
                 <MachineList
                   machines={machines}
-                  currentRole={currentRole}
                   onOpenCreateModal={() => {
                     setEditingMachine(null);
                     setIsMachineModalOpen(true);
@@ -358,14 +366,6 @@ export function App() {
                     setIsMachineModalOpen(true);
                   }}
                   onDeleteMachine={handleDeleteMachine}
-                />
-              )}
-
-              {activeTab === 'settings' && (
-                <SettingsView
-                  onOpenConnectionModal={() => setIsConnectionModalOpen(true)}
-                  currentRole={currentRole}
-                  onRoleChange={setCurrentRole}
                 />
               )}
             </>
@@ -452,5 +452,14 @@ export function App() {
 
     </div>
   );
+};
+
+export function App() {
+  return (
+    <AuthProvider>
+      <MesAppContent />
+    </AuthProvider>
+  );
 }
+
 export default App;
