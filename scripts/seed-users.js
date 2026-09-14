@@ -52,25 +52,25 @@ const supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
 const SEED_USERS = [
   {
     email: 'admin@factory.com',
-    password: 'Admin#123!',
+    password: 'Admin123',
     full_name: 'Plant Administrator',
     role: 'Admin'
   },
   {
     email: 'supervisor@factory.com',
-    password: 'Super#123!',
+    password: 'Supervisor123',
     full_name: 'Production Supervisor',
     role: 'Supervisor'
   },
   {
     email: 'operator@factory.com',
-    password: 'Oper#123!',
+    password: 'Operator123',
     full_name: 'Senior Machine Operator',
     role: 'Operator'
   },
   {
     email: 'quality@factory.com',
-    password: 'Quality#123!',
+    password: 'Quality123',
     full_name: 'Quality Assurance Lead',
     role: 'Quality Inspector'
   }

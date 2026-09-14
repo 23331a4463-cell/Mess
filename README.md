@@ -73,10 +73,10 @@ The system enforces real authentication via **Supabase Auth**. Users log in with
 
 | Role | Email | Password | Full Name |
 |---|---|---|---|
-| **Admin** | `admin@factory.com` | `Admin#123!` | Plant Administrator |
-| **Supervisor** | `supervisor@factory.com` | `Super#123!` | Production Supervisor |
-| **Operator** | `operator@factory.com` | `Oper#123!` | Senior Machine Operator |
-| **Quality Inspector** | `quality@factory.com` | `Quality#123!` | Quality Assurance Lead |
+| **Admin** | `admin@factory.com` | `Admin123` | Plant Administrator |
+| **Supervisor** | `supervisor@factory.com` | `Supervisor123` | Production Supervisor |
+| **Operator** | `operator@factory.com` | `Operator123` | Senior Machine Operator |
+| **Quality Inspector** | `quality@factory.com` | `Quality123` | Quality Assurance Lead |
 
 ---
 

@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Clock, 
-  Plus,
-  LogOut
+  Plus, 
+  LogOut,
+  Menu
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { Logo } from '../common/Logo';
@@ -10,11 +11,13 @@ import { Logo } from '../common/Logo';
 interface NavbarProps {
   onOpenNewWorkOrder: () => void;
   onOpenNewProduction: () => void;
+  onToggleMobileSidebar?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   onOpenNewWorkOrder,
-  onOpenNewProduction
+  onOpenNewProduction,
+  onToggleMobileSidebar
 }) => {
   const { profile, user, role, signOut } = useAuth();
   const [time, setTime] = useState<string>('');
@@ -45,14 +48,24 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   return (
-    <header className="sticky top-0 z-30 bg-white border-b border-slate-200 px-4 lg:px-6 py-2.5">
-      <div className="flex items-center justify-between gap-4">
+    <header className="shrink-0 sticky top-0 z-30 bg-white border-b border-slate-200 px-3 sm:px-4 lg:px-6 py-2.5">
+      <div className="flex items-center justify-between gap-2 sm:gap-4">
         
-        {/* Left: Brand Identity using custom Logo component */}
-        <Logo size="sm" />
+        {/* Left: Mobile hamburger button & Brand Identity */}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onToggleMobileSidebar}
+            className="lg:hidden p-2 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-slate-200 transition-colors cursor-pointer"
+            aria-label="Toggle navigation menu"
+          >
+            <Menu className="w-4 h-4" />
+          </button>
+          <Logo size="sm" />
+        </div>
 
         {/* Center: System Telemetry (Live Clock) */}
-        <div className="flex items-center gap-3">
+        <div className="hidden md:flex items-center gap-3">
           <div className="flex items-center gap-2 px-3.5 py-1.5 rounded-[30px] bg-slate-50 border border-slate-200 text-xs font-mono font-normal text-slate-700 tabular-nums">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />

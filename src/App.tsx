@@ -35,6 +35,7 @@ const MesAppContent: React.FC = () => {
 
   // Navigation State
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
   // Supabase Data State
   const [loading, setLoading] = useState(true);
@@ -272,7 +273,7 @@ const MesAppContent: React.FC = () => {
   const inProgressOrders = workOrders.filter(w => w.status === 'In Progress').length;
 
   return (
-    <div className="min-h-screen bg-white text-[#1E2939] flex flex-col font-sans">
+    <div className="h-screen h-[100dvh] bg-white text-[#1E2939] flex flex-col font-sans overflow-hidden">
       
       {/* Top Navbar */}
       <Navbar
@@ -284,20 +285,26 @@ const MesAppContent: React.FC = () => {
           setPreselectedProductionOrder(null);
           setIsProductionModalOpen(true);
         }}
+        onToggleMobileSidebar={() => setIsMobileSidebarOpen(prev => !prev)}
       />
 
       {/* Main Body */}
-      <div className="flex-1 flex">
+      <div className="flex-1 flex overflow-hidden relative">
         
         {/* Sidebar */}
         <Sidebar
           activeTab={activeTab}
-          onSelectTab={setActiveTab}
+          onSelectTab={(tab) => {
+            setActiveTab(tab);
+            setIsMobileSidebarOpen(false);
+          }}
           counts={{
             workOrders: workOrders.length,
             runningMachines,
             inProgressOrders
           }}
+          isOpenMobile={isMobileSidebarOpen}
+          onCloseMobile={() => setIsMobileSidebarOpen(false)}
         />
 
         {/* Dynamic Page Content */}
